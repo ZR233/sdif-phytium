@@ -1,4 +1,8 @@
-use tock_registers::{register_structs, registers::*};
+use tock_registers::{
+    interfaces::{Readable, Writeable},
+    register_bitfields, register_structs,
+    registers::*,
+};
 
 register_structs! {
     pub SdRegister {
@@ -40,7 +44,7 @@ register_structs! {
         // Controller status register: read-only
         (0x048 => status: ReadOnly<u32>),
         // FIFO threshold register: read-write
-        (0x04C => fifoth: ReadWrite<u32>),
+        (0x04C => fifoth: ReadWrite<u32, Fifoth::Register>),
         // Card detect register: read-only
         (0x050 => card_detect: ReadOnly<u32>),
         // Write protection register: read-only
@@ -96,5 +100,38 @@ register_structs! {
         (0x200 => data: ReadWrite<u32>),
         // End of register definitions
         (0x204 => @END),
+    }
+}
+
+register_bitfields! [
+    u32,
+    Fifoth [
+        TX_WMark OFFSET(0) NUMBITS(12) [],
+        RX_WMark OFFSET(16) NUMBITS(12) [],
+        DMA_Multiple_Transaction_Size OFFSET(28) NUMBITS(3) [
+            B1 = 0b0,
+            B4 = 0b1,
+            B8 = 0b10,
+            B16 = 0b11,
+            B32 = 0b100,
+            B64 = 0b101,
+            B128 = 0b110,
+            B256 = 0b111,
+        ],
+    ]
+
+];
+
+impl SdRegister {
+    pub fn set_fifo(&self) {
+        self.fifoth.write(
+            Fifoth::DMA_Multiple_Transaction_Size::B8
+                + Fifoth::RX_WMark.val(0x7)
+                + Fifoth::TX_WMark.val(0x100),
+        );
+    }
+
+    pub fn card_detect(&self) -> bool {
+        self.card_detect.get() > 0
     }
 }

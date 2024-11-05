@@ -17,9 +17,12 @@ use sdmmc_phytium::Sdif;
 #[test_case]
 fn test_base() {
     // map uart data register for using.
-    let base_addr = iomap(28000000.into(), 0x1000);
+    let base_addr = iomap(0x28000000.into(), 0x1000);
 
-    let sd = Sdif::new(base);
+    let sd = Sdif::new(base_addr);
 
+    // let is_cart_detect = sd.card_detect();
+
+    // assert!(is_cart_detect);
     println!("test passed!");
 }

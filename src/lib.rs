@@ -17,4 +17,13 @@ impl Sdif {
     pub fn new(base: NonNull<u8>) -> Self {
         Sdif { reg: base.cast() }
     }
+
+    fn reg(&self) -> &SdRegister {
+        unsafe { self.reg.as_ref() }
+    }
+
+    /// 卡是否在位
+    pub fn card_detect(&self) -> bool {
+        self.reg().card_detect()
+    }
 }
