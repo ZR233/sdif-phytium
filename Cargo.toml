@@ -1,0 +1,11 @@
+[package]
+name = "sdmmc-phytium"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bare-test = "0.0.5"
+log = "0.4"
+
+[build-dependencies]
+sparreal-macros = "0.0.5"
