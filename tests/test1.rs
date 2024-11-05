@@ -12,11 +12,14 @@ fn main() {
 }
 
 use bare_test::{iomap, println};
+use sdmmc_phytium::Sdif;
 
 #[test_case]
 fn test_base() {
     // map uart data register for using.
     let base_addr = iomap(28000000.into(), 0x1000);
 
-    println!("uart test passed!");
+    let sd = Sdif::new(base);
+
+    println!("test passed!");
 }

@@ -1,6 +1,20 @@
 #![no_std]
 #![no_main]
 
-#![feature(custom_test_frameworks)]
-#![test_runner(bare_test::test_runner)]
+use core::ptr::NonNull;
 
+use register::SdRegister;
+
+mod register;
+
+pub struct Sdif {
+    reg: NonNull<SdRegister>,
+}
+
+unsafe impl Send for Sdif {}
+
+impl Sdif {
+    pub fn new(base: NonNull<u8>) -> Self {
+        Sdif { reg: base.cast() }
+    }
+}
