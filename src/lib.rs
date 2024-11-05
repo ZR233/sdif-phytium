@@ -15,7 +15,9 @@ unsafe impl Send for Sdif {}
 
 impl Sdif {
     pub fn new(base: NonNull<u8>) -> Self {
-        Sdif { reg: base.cast() }
+        let s = Sdif { reg: base.cast() };
+        s.reset();
+        s
     }
 
     fn reg(&self) -> &SdRegister {
@@ -25,5 +27,10 @@ impl Sdif {
     /// 卡是否在位
     pub fn card_detect(&self) -> bool {
         self.reg().card_detect()
+    }
+
+    pub fn reset(&self) {
+        self.reg().set_fifo();
+        
     }
 }
