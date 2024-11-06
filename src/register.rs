@@ -1,8 +1,12 @@
 use tock_registers::{
-    interfaces::{Readable, Writeable},
+    interfaces::{ReadWriteable, Readable, Writeable},
     register_bitfields, register_structs,
     registers::*,
 };
+
+use crate::err::{Error, Result};
+
+const TIMEOUT: usize = 50000;
 
 register_structs! {
     pub SdRegister {
@@ -14,11 +18,11 @@ register_structs! {
         (0x008 => clkdiv: ReadWrite<u32>),
         (0x00C => _rsv),
         // Card clock enable register: read-write
-        (0x010 => clkena: ReadWrite<u32>),
+        (0x010 => clkena: ReadWrite<u32, Clkena::Register>),
         // Timeout register: read-write
         (0x014 => tmout: ReadWrite<u32>),
         // Card type register: read-write
-        (0x018 => ctype: ReadWrite<u32>),
+        (0x018 => ctype: ReadWrite<u32, CType::Register>),
         // Block size register: read-write
         (0x01C => blksiz: ReadWrite<u32>),
         // Byte count register: read-write
@@ -63,7 +67,7 @@ register_structs! {
         (0x06C => vid: ReadOnly<u32>),
         (0x070 => _rsv1),
         // UHS-1 register: read-write
-        (0x074 => uhs_reg: ReadWrite<u32>),
+        (0x074 => uhs_reg: ReadWrite<u32, UhsReg::Register>),
         // Card reset register: read-write
         (0x078 => card_reset: ReadWrite<u32>),
         (0x07C => _rsv7),
@@ -88,10 +92,10 @@ register_structs! {
         (0x0A4 => cur_buf_addr_reg_u: ReadOnly<u32>),
         (0x0A8 => _rsv3),
         // Card threshold control register: read-write
-        (0x100 => cardthctl: ReadWrite<u32>),
+        (0x100 => cardthctl: ReadWrite<u32, Cardthctl::Register>),
         (0x104 => _rsv4),
         // UHS register extension: read-write
-        (0x108 => clksrc: ReadWrite<u32>),
+        (0x108 => clksrc: ReadWrite<u32, ClkSrc::Register>),
         (0x10C => _rsv5),
         // Phase shift enable register: read-write
         (0x110 => enable_shift: ReadWrite<u32>),
@@ -105,6 +109,36 @@ register_structs! {
 
 register_bitfields! [
     u32,
+    CType[
+        CARD0_WIDTH2 OFFSET(0) NUMBITS(16) [
+            Mode1_Bit = 0,
+            Mode4_Bit = 1,
+        ],
+        CARD0_WIDTH1 OFFSET(16) NUMBITS(16) [
+            ModeNon_8_Bit = 0,
+            Mode1_8_Bit = 1,
+        ],
+    ],
+    Clkena[
+        /// 使能
+        CCLK_ENABLE OFFSET(0) NUMBITS(16) [
+            Disabled = 0,
+            Enabled = 1,
+        ],
+        /// 低功耗
+        CCLK_LOW_POWER OFFSET(16) NUMBITS(16) [
+            True = 0,
+            False = 1,
+        ],
+    ],
+    UhsReg [
+        VOLT_REG_0 OFFSET(0) NUMBITS(16) [
+            /// 3.3V Vdd
+            V3_3 = 0,
+            /// 1.8V Vdd
+            V1_8 = 1,
+        ],
+    ],
     Fifoth [
         TX_WMark OFFSET(0) NUMBITS(12) [],
         RX_WMark OFFSET(16) NUMBITS(12) [],
@@ -118,8 +152,32 @@ register_bitfields! [
             B128 = 0b110,
             B256 = 0b111,
         ],
-    ]
+    ],
+    Cardthctl[
+        /// 卡读 Threshold 使能
+        CARDRDTHRE  OFFSET(0) NUMBITS(1) [],
+        /// Busy 清中断
+        BUSY_CLR_INT_EN OFFSET(1) NUMBITS(1) [],
+        /// 写卡 Threshold 使能
+        CARDWRTHREN OFFSET(2) NUMBITS(1) [],
 
+        CARDRDTHRESHOLD_8 OFFSET(23) NUMBITS(1) [],
+        CARDRDTHRESHOLD_16 OFFSET(24) NUMBITS(1) [],
+        CARDRDTHRESHOLD_32 OFFSET(25) NUMBITS(1) [],
+        CARDRDTHRESHOLD_64 OFFSET(26) NUMBITS(1) [],
+        CARDRDTHRESHOLD_128 OFFSET(27) NUMBITS(1) [],
+        CARDRDTHRESHOLD_256 OFFSET(28) NUMBITS(1) [],
+    ],
+    ClkSrc[
+        /// 外部时钟－控制器内部设备接口模块时钟源使能。
+        EXT_CLK_ENABLE OFFSET(1) NUMBITS(1) [],
+        /// 分频参数，CIU f= CLK_DIV_CTRL +1，MIN=1。
+        CLK_DIV_CTRL OFFSET(8) NUMBITS(7) [],
+        /// 采样相位参数，相对于控制器端时钟相位点。
+        CLK_SMPL_PHASE_CTRL OFFSET(16) NUMBITS(7) [],
+        /// 输出相位参数，相对于控制器端时钟相位点。
+        CLK_DRV_PHASE_CTRL OFFSET(24) NUMBITS(7) [],
+    ],
 ];
 
 impl SdRegister {
@@ -131,7 +189,97 @@ impl SdRegister {
         );
     }
 
+    pub fn set_card_threshold(&self) {
+        self.cardthctl
+            .write(Cardthctl::CARDRDTHRESHOLD_8::SET + Cardthctl::CARDRDTHRE::SET);
+    }
+
     pub fn card_detect(&self) -> bool {
         self.card_detect.get() > 0
     }
+
+    pub fn set_clock(&self, enable: bool) {
+        self.clkena.modify(if enable {
+            Clkena::CCLK_ENABLE::Enabled
+        } else {
+            Clkena::CCLK_ENABLE::Disabled
+        });
+    }
+
+    pub fn set_power(&self, enable: bool) {
+        self.pwren.set(if enable { 1 } else { 0 });
+    }
+
+    pub fn set_clock_src(&self, enable: bool) {
+        self.clksrc.modify(if enable {
+            ClkSrc::EXT_CLK_ENABLE::SET
+        } else {
+            ClkSrc::EXT_CLK_ENABLE::CLEAR
+        });
+    }
+
+    pub fn update_external_clk(
+        &self,
+        enable: bool,
+        drv_phase: u32,
+        samp_phase: u32,
+        clk_div: u32,
+    ) -> Result {
+        self.clksrc.set(0);
+        self.clksrc.write(
+            if enable {
+                ClkSrc::EXT_CLK_ENABLE::SET
+            } else {
+                ClkSrc::EXT_CLK_ENABLE::CLEAR
+            } + ClkSrc::CLK_DRV_PHASE_CTRL.val(drv_phase)
+                + ClkSrc::CLK_SMPL_PHASE_CTRL.val(samp_phase)
+                + ClkSrc::CLK_DIV_CTRL.val(clk_div),
+        );
+
+        for _ in 0..TIMEOUT {
+            if self.clksrc.get() == 0 {
+                return Ok(());
+            }
+        }
+
+        Err(Error::Timeout)
+    }
+
+    pub fn disable_clock_and_update_ext_clk(&self) -> Result {
+        self.set_clock(false);
+        self.update_external_clk(true, 0, 0, 0x5)?;
+        self.set_power(true);
+        self.set_clock(true);
+        self.set_clock_src(true);
+        Ok(())
+    }
+
+    pub fn set_bus_witdh(&self, width: BusWitdh) {
+        let val = match width {
+            BusWitdh::Bit1 => CType::CARD0_WIDTH2::Mode1_Bit,
+            BusWitdh::Bit4 => CType::CARD0_WIDTH2::Mode4_Bit,
+            BusWitdh::Bit8 => CType::CARD0_WIDTH1::Mode1_8_Bit,
+        };
+        self.ctype.write(val);
+    }
+
+    pub fn reset(&self) -> Result {
+        self.set_fifo();
+        self.set_card_threshold();
+        self.disable_clock_and_update_ext_clk()?;
+
+        self.uhs_reg.write(UhsReg::VOLT_REG_0::V3_3);
+
+        self.set_bus_witdh(BusWitdh::Bit1);
+
+        Ok(())
+    }
+}
+
+#[allow(unused)]
+#[derive(Debug, Clone, Copy)]
+pub enum BusWitdh {
+    Bit1,
+    Bit4,
+    Bit8,
 }

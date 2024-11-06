@@ -3,8 +3,11 @@
 
 use core::ptr::NonNull;
 
+use err::Result;
+use log::{debug, info};
 use register::SdRegister;
 
+pub mod err;
 mod register;
 
 pub struct Sdif {
@@ -14,10 +17,10 @@ pub struct Sdif {
 unsafe impl Send for Sdif {}
 
 impl Sdif {
-    pub fn new(base: NonNull<u8>) -> Self {
+    pub fn new(base: NonNull<u8>) -> Result<Self> {
         let s = Sdif { reg: base.cast() };
-        s.reset();
-        s
+        s.reset()?;
+        Ok(s)
     }
 
     fn reg(&self) -> &SdRegister {
@@ -29,8 +32,9 @@ impl Sdif {
         self.reg().card_detect()
     }
 
-    pub fn reset(&self) {
-        self.reg().set_fifo();
-        
+    pub fn reset(&self) -> Result {
+        self.reg().reset()?;
+        info!("Reset hardware done !!!");
+        Ok(())
     }
 }
