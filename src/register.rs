@@ -4,7 +4,7 @@ use core::{
     sync::atomic::{fence, Ordering},
 };
 
-use log::{debug, error};
+use log::error;
 use tock_registers::{
     fields::FieldValue,
     interfaces::{ReadWriteable, Readable, Writeable},
@@ -477,7 +477,7 @@ impl SdRegister {
         #[cfg(target_arch = "aarch64")]
         {
             self.desc_list_star_reg_u.set((ptr >> 32) as u32);
-            self.desc_list_star_reg_l.set((ptr & 0xFFFF) as u32);
+            self.desc_list_star_reg_l.set((ptr & 0xFFFFFFFF) as u32);
         }
         #[cfg(target_arch = "arm")]
         {

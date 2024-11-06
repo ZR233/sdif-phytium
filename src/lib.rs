@@ -4,7 +4,7 @@
 use core::ptr::NonNull;
 
 use err::Result;
-use log::{debug, info};
+use log::info;
 use register::SdRegister;
 
 pub mod err;
