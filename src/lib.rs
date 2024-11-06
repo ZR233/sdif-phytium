@@ -31,6 +31,8 @@ pub struct Sdif {
 unsafe impl Send for Sdif {}
 
 impl Sdif {
+    pub const COMPATIBLE: &'static str = "phytium,mci";
+
     pub fn new(base: NonNull<u8>, config: Config) -> Result<Self> {
         let s = Sdif {
             reg: base.cast(),
