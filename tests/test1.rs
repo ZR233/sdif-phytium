@@ -12,14 +12,24 @@ fn main() {
 }
 
 use bare_test::{iomap, println};
-use sdmmc_phytium::Sdif;
+use log::error;
+use sdmmc_phytium::{Config, Sdif, TransMode};
 
 #[test_case]
 fn test_base() {
     // map uart data register for using.
     let base_addr = iomap(0x28000000.into(), 0x1000);
 
-    let sd = Sdif::new(base_addr).unwrap();
+    let config = Config {
+        trans_mode: TransMode::PIO,
+        non_removeable: false,
+    };
+
+    let sd = Sdif::new(base_addr, config)
+        .inspect_err(|e| {
+            error!("{:?}", e);
+        })
+        .unwrap();
 
     // let is_cart_detect = sd.card_detect();
 

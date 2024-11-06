@@ -10,15 +10,32 @@ use register::SdRegister;
 pub mod err;
 mod register;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransMode {
+    DMA,
+    /// NO-DMA trans by read/write Fifo
+    PIO,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Config {
+    pub trans_mode: TransMode,
+    pub non_removeable: bool,
+}
+
 pub struct Sdif {
     reg: NonNull<SdRegister>,
+    config: Config,
 }
 
 unsafe impl Send for Sdif {}
 
 impl Sdif {
-    pub fn new(base: NonNull<u8>) -> Result<Self> {
-        let s = Sdif { reg: base.cast() };
+    pub fn new(base: NonNull<u8>, config: Config) -> Result<Self> {
+        let s = Sdif {
+            reg: base.cast(),
+            config,
+        };
         s.reset()?;
         Ok(s)
     }
@@ -33,7 +50,7 @@ impl Sdif {
     }
 
     pub fn reset(&self) -> Result {
-        self.reg().reset()?;
+        self.reg().reset(self.config)?;
         info!("Reset hardware done !!!");
         Ok(())
     }
