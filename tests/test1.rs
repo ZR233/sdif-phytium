@@ -41,6 +41,8 @@ fn test_base() {
         })
         .unwrap();
 
+    
+
     // let is_cart_detect = sd.card_detect();
 
     // assert!(is_cart_detect);

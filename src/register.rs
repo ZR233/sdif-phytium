@@ -1,12 +1,11 @@
 use core::{
-    error,
     hint::spin_loop,
     ptr::{null, slice_from_raw_parts, slice_from_raw_parts_mut},
     sync::atomic::{fence, Ordering},
     time::Duration,
 };
 
-use log::{debug, error, info};
+use log::{debug, error};
 use tock_registers::{
     fields::FieldValue,
     interfaces::{ReadWriteable, Readable, Writeable},
@@ -582,7 +581,7 @@ impl SdRegister {
         Ok(())
     }
 
-    pub fn reset_fifo_and_not_use_dma(&self)->Result{
+    pub fn reset_fifo_and_not_use_dma(&self) -> Result {
         self.cr.modify(Cntrl::USE_INTERNAL_DMAC::CLEAR);
         self.reset_ctrl(Cntrl::FIFO_RESET::SET)?;
 
