@@ -1,10 +1,12 @@
 use core::{
+    error,
     hint::spin_loop,
-    ptr::null,
+    ptr::{null, slice_from_raw_parts, slice_from_raw_parts_mut},
     sync::atomic::{fence, Ordering},
+    time::Duration,
 };
 
-use log::error;
+use log::{debug, error, info};
 use tock_registers::{
     fields::FieldValue,
     interfaces::{ReadWriteable, Readable, Writeable},
@@ -13,11 +15,16 @@ use tock_registers::{
 };
 
 use crate::{
+    define::{
+        CmdDataFlag::{self, SWITCH_VOLTAGE},
+        SdifCmdData, SdifData,
+    },
     err::{Error, Result},
-    Config, TransMode,
+    Config, KFun, TransMode,
 };
 
 const TIMEOUT: usize = 50000;
+pub const MAX_FIFO_CNT: u32 = 0x800;
 
 register_structs! {
     pub SdRegister {
@@ -189,11 +196,14 @@ register_bitfields! [
         ],
     ],
     Cmd[
-        CMD_INDEX          OFFSET(0)  NUMBITS(6)  [],
+        CMD_INDEX          OFFSET(0)  NUMBITS(6)  [
+            SWITCH_VOLTAGE = 11,
+        ],
         RESPONSE_EXPECT    OFFSET(6)  NUMBITS(1)  [],
         RESPONSE_LENGTH    OFFSET(7)  NUMBITS(1)  [],
         CHECK_RESPONSE_CRC OFFSET(8)  NUMBITS(1)  [],
         DATA_EXPECTED      OFFSET(9)  NUMBITS(1)  [],
+        /// 0：读卡 1：写卡
         READ_WRITE         OFFSET(10) NUMBITS(1)  [],
         SEND_AUTO_STOP     OFFSET(12) NUMBITS(1)  [],
         WAIT_PRVDATA_COMPLETE OFFSET(13) NUMBITS(1)  [],
@@ -382,7 +392,7 @@ impl SdRegister {
         self.ctype.write(val);
     }
 
-    pub fn send_private_cmd(&self, cmd: CmdCode, arg: u32) -> Result {
+    pub fn send_private_cmd(&self, cmd: FieldValue<u32, Cmd::Register>, arg: u32) -> Result {
         self.wait_for(|s| s.status.is_set(Status::DATA_BUSY), false)
             .map_err(|_| Error::Busy)?;
 
@@ -390,7 +400,7 @@ impl SdRegister {
 
         fence(Ordering::SeqCst);
 
-        self.cmd.write(Cmd::START_CMD.val(0b10) + cmd.into());
+        self.cmd.write(Cmd::START_CMD.val(0b10) + cmd);
 
         self.wait_for(|s| s.cmd.read(Cmd::START_CMD) > 0, false)?;
 
@@ -403,7 +413,7 @@ impl SdRegister {
         self.wait_for(|s| s.cr.get() & reset_bits.value > 0, false)?;
 
         /* update clock after reset */
-        self.send_private_cmd(CmdCode::UpdateClk, 0)?;
+        self.send_private_cmd(Cmd::UPDATE_CLOCK_REGISTERS_ONLY::SET, 0)?;
 
         /* for fifo reset, need to check if fifo empty */
         if reset_bits.value & Cntrl::FIFO_RESET::SET.value > 0 {
@@ -472,6 +482,114 @@ impl SdRegister {
         self.bus_mode_reg.modify(BusMode::SWR::SET);
     }
 
+    pub fn set_trans_bytes(&self, bytes: u32) {
+        self.bytcnt.set(bytes);
+    }
+
+    pub fn set_block_size(&self, block_size: u32) {
+        self.blksiz.set(block_size);
+    }
+
+    pub fn pio_read_data(&self, data: &mut SdifData) -> Result {
+        let buf = unsafe {
+            &mut *slice_from_raw_parts_mut(data.buf as *mut u32, data.datalen as usize / 4)
+        };
+
+        if data.datalen > MAX_FIFO_CNT {
+            error!(
+                "Fifo do not support writing more than {:#x} ({:#x})",
+                MAX_FIFO_CNT, data.datalen
+            );
+            return Err(Error::NotSupport);
+        }
+
+        for one in buf {
+            *one = self.data.get();
+        }
+
+        Ok(())
+    }
+
+    pub fn pio_write_data(&self, data: &SdifData) -> Result {
+        let buf =
+            unsafe { &*slice_from_raw_parts(data.buf as *mut u32, data.datalen as usize / 4) };
+        self.cmd.write(Cmd::READ_WRITE::SET);
+        for one in buf {
+            self.data.set(*one);
+        }
+        Ok(())
+    }
+
+    pub fn poll_wait_busy_card<K: KFun>(&self) -> Result {
+        self.wait_for_time::<K, _, _>(
+            |s| {
+                s.status
+                    .matches_any(&[Status::DATA_BUSY::SET, Status::DATA_STATE_MC_BUSY::SET])
+            },
+            false,
+            Duration::from_millis(200),
+        )?;
+        Ok(())
+    }
+
+    pub fn transfer_cmd(&self, cmd_data: &SdifCmdData) -> Result {
+        let mut raw_cmd = Cmd::USE_HOLD_REG::SET;
+
+        if cmd_data.flag.is_set(CmdDataFlag::ABORT) {
+            raw_cmd += Cmd::STOP_ABORT_CMD::SET;
+        }
+
+        if cmd_data.flag.is_set(CmdDataFlag::NEED_INIT) {
+            raw_cmd += Cmd::SEND_INITIALIZATION::SET;
+        }
+
+        if cmd_data.flag.is_set(SWITCH_VOLTAGE) {
+            raw_cmd += Cmd::VOLT_SWITCH::SET;
+        }
+        /* 命令传输过程伴随数据传输 */
+        if cmd_data.flag.is_set(CmdDataFlag::EXP_DATA) {
+            raw_cmd += Cmd::DATA_EXPECTED::SET;
+            /* 写卡 */
+            if cmd_data.flag.is_set(CmdDataFlag::WRITE_DATA) {
+                raw_cmd += Cmd::READ_WRITE::SET;
+            }
+        }
+        /* 命令需要进行CRC校验 */
+        if cmd_data.flag.is_set(CmdDataFlag::ADTC) {
+            raw_cmd += Cmd::CHECK_RESPONSE_CRC::SET;
+        }
+        /* 命令需要响应回复 */
+        if cmd_data.flag.is_set(CmdDataFlag::EXP_RESP) {
+            raw_cmd += Cmd::RESPONSE_EXPECT::SET;
+            /* 命令需要136字节长回复 */
+            if cmd_data.flag.is_set(CmdDataFlag::EXP_LONG_RESP) {
+                raw_cmd += Cmd::RESPONSE_LENGTH::SET;
+            }
+        }
+
+        raw_cmd += Cmd::CMD_INDEX.val(cmd_data.cmdidx);
+
+        debug!("============[CMD-{}] begin ============", cmd_data.cmdidx,);
+        debug!("    cmd: {:#x}", raw_cmd.value);
+        debug!("    arg: {:#x}", cmd_data.cmdarg);
+        /* enable related interrupt */
+        self.int_mask.modify(IntMask::CMD_INT_MASK::SET);
+
+        self.send_private_cmd(raw_cmd, cmd_data.cmdarg)?;
+
+        debug!("cmd send done ...");
+
+        Ok(())
+    }
+
+    pub fn reset_fifo_and_not_use_dma(&self)->Result{
+        self.cr.modify(Cntrl::USE_INTERNAL_DMAC::CLEAR);
+        self.reset_ctrl(Cntrl::FIFO_RESET::SET)?;
+
+        self.bus_mode_reg.modify(BusMode::DE::CLEAR);
+        Ok(())
+    }
+
     fn set_descriptor(&self, descriptor: *const u8) {
         let ptr = descriptor as usize;
         #[cfg(target_arch = "aarch64")]
@@ -485,7 +603,21 @@ impl SdRegister {
             self.desc_list_star_reg_l.set(ptr as u32);
         }
     }
+    fn wait_for_time<K: KFun, T: Eq, F>(&self, f: F, want: T, duration: Duration) -> Result
+    where
+        F: Fn(&SdRegister) -> T,
+    {
+        let count = duration.as_micros() / 10;
 
+        for _ in 0..count {
+            if f(self).eq(&want) {
+                return Ok(());
+            }
+            K::sleep(Duration::from_micros(10));
+        }
+
+        Err(Error::Timeout)
+    }
     fn wait_for<T: Eq, F>(&self, f: F, want: T) -> Result
     where
         F: Fn(&SdRegister) -> T,
@@ -507,16 +639,4 @@ pub enum BusWitdh {
     Bit1,
     Bit4,
     Bit8,
-}
-
-pub enum CmdCode {
-    UpdateClk,
-}
-
-impl From<CmdCode> for FieldValue<u32, Cmd::Register> {
-    fn from(value: CmdCode) -> Self {
-        match value {
-            CmdCode::UpdateClk => Cmd::UPDATE_CLOCK_REGISTERS_ONLY::SET,
-        }
-    }
 }

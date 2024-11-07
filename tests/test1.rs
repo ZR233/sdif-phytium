@@ -11,9 +11,19 @@ fn main() {
     test_main();
 }
 
+use core::hint::spin_loop;
+
 use bare_test::{iomap, println};
 use log::error;
-use sdmmc_phytium::{Config, Sdif, TransMode};
+use sdmmc_phytium::{Config, KFun, Sdif, TransMode};
+
+struct KFunImpl;
+
+impl KFun for KFunImpl {
+    fn sleep(duration: core::time::Duration) {
+        spin_loop();
+    }
+}
 
 #[test_case]
 fn test_base() {
@@ -25,7 +35,7 @@ fn test_base() {
         non_removeable: false,
     };
 
-    let sd = Sdif::new(base_addr, config)
+    let sd = Sdif::<KFunImpl>::new(base_addr, config)
         .inspect_err(|e| {
             error!("{:?}", e);
         })
